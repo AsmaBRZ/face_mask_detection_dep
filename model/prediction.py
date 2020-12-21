@@ -6,54 +6,55 @@ from PIL import Image
 from skimage.transform import resize
 from flask import jsonify 
 import os
-
+import matplotlib
 import base64
 
 model_w = None
 device = 'cpu'
 
-def plot_image(img_tensor, annotation):
+def make_image(image, objects):
     fig,ax = plt.subplots(1)
-    img = img_tensor.cpu().data
+    fig.patch.set_visible(False)
+    
+    plt.axis('off')
+ 
+    ax.imshow(image)
 
-    # Display the image
-    ax.imshow(img.permute(1, 2, 0))
-    for box in annotation["boxes"]:
-        xmin, ymin, xmax, ymax = box
-
-        # Create a Rectangle patch
-        rect = patches.Rectangle((xmin,ymin),(xmax-xmin),(ymax-ymin),linewidth=1,edgecolor='r',facecolor='none')
-
-        # Add the patch to the Axes
-        ax.add_patch(rect)
-
+    for annotation in objects:
+      xmin, ymin, xmax, ymax = annotation['bbox']
+      rect = patches.Rectangle((xmin,ymin), (xmax-xmin), (ymax-ymin), linewidth=1, edgecolor=classes_color[annotation['name']], facecolor='none')
+      ax.add_patch(rect)
+    #extent = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+    #plt.savefig(root_folder+'inference.png',bbox_inches=extent )
+    #plt.show()
     encoded = fig_to_base64(fig)
     return '<img src="data:image/png;base64, {}">'.format(encoded.decode('utf-8'))
 
+    
+
 def predict(data):  
     global model_w
+    device=torch.device('cpu')
 
     if model_w is None:
         txt=os.path.abspath(__file__)
         x = txt.split("/", 3)
         my_path="/"+x[1]+"/"+x[2]+"/model/model.pth"
         model_w = torch.load(my_path)
+        model.eval()
         
+    normalize = T.Compose([T.ToTensor()])
+    classes_color = {'with_mask':'g', 'without_mask':'r', 'mask_weared_incorrect':'tab:orange'}
 
-    CLASSES = ['background','with_mask','without_mask','mask_weared_incorrect']
-    IMG_SHAPE = (64,64)
-    image = Image.open(data)
-    image=np.array(image)
-    print(image.shape)
-    
-    image = image.astype('float32')
-    image = resize(image, (32, 32), anti_aliasing=True)
-    image /= 255
-    imgs = list(image.to(device))
+    image = Image.open(data).convert('RGB')
+    or_image=image
+    image=F.resize(image, (64,64))
+    image=normalize(image)
+    preds = model([image])[0]
+    keep = torchvision.ops.nms(preds['boxes'], preds['scores'], 0.00001)
+    resized_obj = enlargeBB(preds,or_image.size[0],or_image.size[1])
+    new_pred_boxes = new_objects_nms(resized_obj,keep)
 
-    model_w.eval()
-    preds = model(image)
-
-    obj = { 'pred': plot_image(imgs[0], preds)}
+    obj = { 'pred':make_image(or_image, new_pred_boxes)}
     
     return json.dumps(obj)
